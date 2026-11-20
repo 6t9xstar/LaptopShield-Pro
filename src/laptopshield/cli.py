@@ -13,8 +13,11 @@ from laptopshield.core.privilege import is_admin
 from laptopshield.core.scanner import (
     export_audit_report,
     kill_all_remote_tools,
+    scan_hosts_file,
+    scan_local_accounts,
     scan_network_connections,
     scan_remote_tools,
+    scan_scheduled_tasks,
     scan_startup_entries,
 )
 
@@ -141,6 +144,38 @@ def audit(export: str = typer.Option("", "--export", "-e", help="Optional JSON r
             console.print(f"[red]Export failed: {err}[/red]")
         else:
             console.print(f"\n[green]Report saved to {export}[/green]")
+
+
+@app.command()
+def forensics() -> None:
+    """Deep forensic audit: non-Microsoft scheduled tasks, local admin accounts & hosts file."""
+    tasks = scan_scheduled_tasks(30)
+    accounts = scan_local_accounts()
+    hosts = scan_hosts_file()
+
+    console.print(f"\n[bold cyan]1. Local Accounts ({len(accounts)})[/bold cyan]")
+    acct_tbl = Table(show_header=True)
+    acct_tbl.add_column("Account")
+    acct_tbl.add_column("Enabled")
+    acct_tbl.add_column("Role")
+    acct_tbl.add_column("Last Logon")
+    for a in accounts:
+        role = "[yellow]Admin[/yellow]" if a.is_admin else "Standard"
+        acct_tbl.add_row(a.name, "Yes" if a.enabled else "No", role, a.last_logon)
+    console.print(acct_tbl)
+
+    flagged_tasks = [t for t in tasks if t.flagged]
+    console.print(f"\n[bold cyan]2. Non-Microsoft Scheduled Tasks ({len(tasks)} total, {len(flagged_tasks)} flagged)[/bold cyan]")
+    for t in tasks[:20]:
+        tag = "[red]FLAGGED[/red]" if t.flagged else "[green]OK[/green]"
+        console.print(f"  {tag} {t.name} ({t.state}) -> {t.action}")
+
+    console.print(f"\n[bold cyan]3. Hosts File Overrides ({len(hosts)})[/bold cyan]")
+    if hosts:
+        for h in hosts:
+            console.print(f"  [yellow]{h}[/yellow]")
+    else:
+        console.print("  [green]Clean (no custom host overrides).[/green]")
 
 
 @app.command()

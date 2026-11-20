@@ -40,8 +40,11 @@ from laptopshield.core.scanner import (
     get_defender_summary,
     kill_all_remote_tools,
     kill_process_tree,
+    scan_hosts_file,
+    scan_local_accounts,
     scan_network_connections,
     scan_remote_tools,
+    scan_scheduled_tasks,
     scan_startup_entries,
 )
 from laptopshield.ui.icons import (
@@ -246,6 +249,7 @@ class MainWindow(QMainWindow):
             ("Network and remote", icon_network("#a1a1aa"), 2),
             ("Processes and sockets", icon_activity("#a1a1aa"), 3),
             ("Startup and audit", icon_list("#a1a1aa"), 4),
+            ("Deep forensics", icon_shield("#a1a1aa"), 5),
         ]
         for label, ico, idx in nav_items:
             btn = QPushButton(label)
@@ -292,6 +296,7 @@ class MainWindow(QMainWindow):
         )
         self._build_process_net_page()
         self._build_startup_logs_page()
+        self._build_forensics_page()
 
         self._setup_shortcuts()
         self._switch_page(0)
@@ -306,7 +311,7 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+R"), self, self.refresh_all)
-        for idx in range(5):
+        for idx in range(6):
             QShortcut(QKeySequence(f"Ctrl+{idx + 1}"), self, lambda i=idx: self._switch_page(i))
 
     def _make_page_header(self, title: str, subtitle: str) -> QVBoxLayout:
@@ -536,6 +541,57 @@ class MainWindow(QMainWindow):
 
         self.pages.addWidget(page)
 
+    def _build_forensics_page(self) -> None:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
+
+        lay.addLayout(
+            self._make_page_header(
+                "Deep forensics",
+                "Inspect non-Microsoft scheduled tasks, local administrator accounts, and hosts file overrides",
+            )
+        )
+
+        hosts_card = QFrame()
+        hosts_card.setObjectName("Card")
+        hc_lay = QVBoxLayout(hosts_card)
+        hc_lay.setContentsMargins(16, 12, 16, 12)
+        hc_lay.setSpacing(4)
+        hc_title = QLabel("Windows hosts file entries")
+        hc_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #f4f4f5;")
+        self.hosts_lbl = QLabel("Scanning...")
+        self.hosts_lbl.setWordWrap(True)
+        self.hosts_lbl.setStyleSheet("font-size: 12px; color: #a1a1aa;")
+        hc_lay.addWidget(hc_title)
+        hc_lay.addWidget(self.hosts_lbl)
+        lay.addWidget(hosts_card)
+
+        tasks_lbl = QLabel("Non-Microsoft scheduled tasks")
+        tasks_lbl.setStyleSheet("font-size: 13px; font-weight: 500; color: #a1a1aa;")
+        lay.addWidget(tasks_lbl)
+
+        self.tasks_table = QTableWidget(0, 4)
+        self.tasks_table.setHorizontalHeaderLabels(["Status", "Task name", "State", "Action"])
+        self.tasks_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tasks_table.verticalHeader().setVisible(False)
+        self.tasks_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        lay.addWidget(self.tasks_table, stretch=1)
+
+        acct_lbl = QLabel("Local user accounts and administrators")
+        acct_lbl.setStyleSheet("font-size: 13px; font-weight: 500; color: #a1a1aa;")
+        lay.addWidget(acct_lbl)
+
+        self.accounts_table = QTableWidget(0, 4)
+        self.accounts_table.setHorizontalHeaderLabels(["Account", "Enabled", "Administrator", "Last logon"])
+        self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.accounts_table.verticalHeader().setVisible(False)
+        self.accounts_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        lay.addWidget(self.accounts_table, stretch=1)
+
+        self.pages.addWidget(page)
+
     def _switch_page(self, idx: int) -> None:
         self.pages.setCurrentIndex(idx)
         for i, btn in enumerate(self.nav_buttons):
@@ -564,12 +620,15 @@ class MainWindow(QMainWindow):
             conns = scan_network_connections(80)
             startup = scan_startup_entries()
             defender = get_defender_summary()
-            return statuses, score, remote, conns, startup, defender
+            tasks = scan_scheduled_tasks(40)
+            accounts = scan_local_accounts()
+            hosts = scan_hosts_file()
+            return statuses, score, remote, conns, startup, defender, tasks, accounts, hosts
 
         self._run_async(gather, self._apply_telemetry)
 
     def _apply_telemetry(self, data: object) -> None:
-        statuses, score, remote, conns, startup, defender = data  # type: ignore[misc]
+        statuses, score, remote, conns, startup, defender, tasks, accounts, hosts = data  # type: ignore[misc]
         self._latest_statuses = statuses
         self._all_conns = conns
 
@@ -613,6 +672,36 @@ class MainWindow(QMainWindow):
             cmd_item = QTableWidgetItem(entry.command)
             cmd_item.setFont(mono_font)
             self.startup_table.setItem(r, 3, cmd_item)
+
+        # Populate Forensics Page
+        if hosts:
+            self.hosts_lbl.setText(" | ".join(hosts[:8]))
+            self.hosts_lbl.setStyleSheet("font-size: 12px; color: #f59e0b;")
+        else:
+            self.hosts_lbl.setText("Clean (no custom host overrides)")
+            self.hosts_lbl.setStyleSheet("font-size: 12px; color: #10b981;")
+
+        self.tasks_table.setRowCount(len(tasks))
+        for r, t in enumerate(tasks):
+            flag_item = QTableWidgetItem("Flagged" if t.flagged else "Normal")
+            flag_item.setForeground(QColor("#ef4444") if t.flagged else QColor("#10b981"))
+            self.tasks_table.setItem(r, 0, flag_item)
+            self.tasks_table.setItem(r, 1, QTableWidgetItem(t.name))
+            self.tasks_table.setItem(r, 2, QTableWidgetItem(t.state))
+            act_item = QTableWidgetItem(t.action)
+            act_item.setFont(mono_font)
+            self.tasks_table.setItem(r, 3, act_item)
+
+        self.accounts_table.setRowCount(len(accounts))
+        for r, acct in enumerate(accounts):
+            self.accounts_table.setItem(r, 0, QTableWidgetItem(acct.name))
+            en_item = QTableWidgetItem("Yes" if acct.enabled else "No")
+            en_item.setForeground(QColor("#f4f4f5") if acct.enabled else QColor("#71717a"))
+            self.accounts_table.setItem(r, 1, en_item)
+            adm_item = QTableWidgetItem("Admin" if acct.is_admin else "Standard")
+            adm_item.setForeground(QColor("#f59e0b") if acct.is_admin else QColor("#a1a1aa"))
+            self.accounts_table.setItem(r, 2, adm_item)
+            self.accounts_table.setItem(r, 3, QTableWidgetItem(acct.last_logon))
 
     def _render_net_table(self) -> None:
         query = self.net_search.text().strip().lower()

@@ -82,6 +82,24 @@ class StartupEntryInfo:
     reason: str
 
 
+@dataclass
+class ScheduledTaskInfo:
+    name: str
+    path: str
+    state: str
+    action: str
+    flagged: bool
+    reason: str
+
+
+@dataclass
+class LocalAccountInfo:
+    name: str
+    enabled: bool
+    is_admin: bool
+    last_logon: str
+
+
 def scan_remote_tools() -> List[RemoteProcessInfo]:
     """Return all currently running remote administration / screen-sharing processes."""
     found: List[RemoteProcessInfo] = []
@@ -265,6 +283,102 @@ def get_defender_summary() -> Dict[str, Any]:
     return {"Enabled": None, "RealTime": None, "Behavior": None, "ActiveThreats": None}
 
 
+def scan_scheduled_tasks(limit: int = 50) -> List[ScheduledTaskInfo]:
+    """Inspect non-Microsoft scheduled tasks for suspicious persistence."""
+    ps_cmd = (
+        "$tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' } | "
+        "Select-Object -First " + str(limit) + " | ForEach-Object { "
+        "$act = ($_.Actions | ForEach-Object { \"$($_.Execute) $($_.Arguments)\".Trim() }) -join '; '; "
+        "[PSCustomObject]@{ Name=$_.TaskName; Path=$_.TaskPath; State=\"$($_.State)\"; Action=$act } "
+        "}; $tasks | ConvertTo-Json -Compress"
+    )
+    rc, out, _ = run_powershell(ps_cmd, timeout=12)
+    if rc != 0 or not out:
+        return []
+    try:
+        raw = json.loads(out)
+        items = raw if isinstance(raw, list) else [raw]
+    except json.JSONDecodeError:
+        return []
+
+    results: List[ScheduledTaskInfo] = []
+    for item in items:
+        action = str(item.get("Action") or "")
+        low_act = action.lower()
+        flagged = False
+        reason = "Normal"
+        for marker in SUSPICIOUS_PATH_MARKERS:
+            if marker in low_act:
+                flagged = True
+                reason = f"Suspicious marker: {marker.strip()}"
+                break
+        if not flagged and any(kw in low_act for kw in REMOTE_TOOL_KEYWORDS):
+            flagged = True
+            reason = "Remote access tool task"
+        results.append(
+            ScheduledTaskInfo(
+                name=str(item.get("Name") or ""),
+                path=str(item.get("Path") or ""),
+                state=str(item.get("State") or ""),
+                action=action,
+                flagged=flagged,
+                reason=reason,
+            )
+        )
+    results.sort(key=lambda t: (not t.flagged, t.name.lower()))
+    return results
+
+
+def scan_local_accounts() -> List[LocalAccountInfo]:
+    """List local user accounts and check Administrators group membership."""
+    ps_cmd = (
+        "$admins = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | "
+        "ForEach-Object { $_.Name.Split('\\')[-1].ToLower() }); "
+        "$users = Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object { "
+        "[PSCustomObject]@{ "
+        "Name=$_.Name; "
+        "Enabled=[bool]$_.Enabled; "
+        "IsAdmin=($admins -contains $_.Name.ToLower()); "
+        "LastLogon=if ($_.LastLogon) { $_.LastLogon.ToString('yyyy-MM-dd HH:mm') } else { 'Never' } "
+        "} }; $users | ConvertTo-Json -Compress"
+    )
+    rc, out, _ = run_powershell(ps_cmd, timeout=10)
+    if rc != 0 or not out:
+        return []
+    try:
+        raw = json.loads(out)
+        items = raw if isinstance(raw, list) else [raw]
+    except json.JSONDecodeError:
+        return []
+
+    return [
+        LocalAccountInfo(
+            name=str(u.get("Name") or ""),
+            enabled=bool(u.get("Enabled")),
+            is_admin=bool(u.get("IsAdmin")),
+            last_logon=str(u.get("LastLogon") or "Never"),
+        )
+        for u in items
+    ]
+
+
+def scan_hosts_file(hosts_path: str = r"C:\Windows\System32\drivers\etc\hosts") -> List[str]:
+    """Return non-comment, non-empty entries from the Windows hosts file."""
+    if not os.path.exists(hosts_path):
+        return []
+    entries: List[str] = []
+    try:
+        with open(hosts_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    entries.append(stripped)
+    except OSError:
+        return []
+    return entries
+
+
 def build_audit_report(hardening_statuses: List[Any], score: int) -> Dict[str, Any]:
     """Compile a structured security audit report dictionary."""
     return {
@@ -274,6 +388,9 @@ def build_audit_report(hardening_statuses: List[Any], score: int) -> Dict[str, A
         "remote_tools_running": [asdict(r) for r in scan_remote_tools()],
         "network_connections": [asdict(c) for c in scan_network_connections(50)],
         "startup_entries": [asdict(e) for e in scan_startup_entries()],
+        "scheduled_tasks": [asdict(t) for t in scan_scheduled_tasks(50)],
+        "local_accounts": [asdict(a) for a in scan_local_accounts()],
+        "hosts_entries": scan_hosts_file(),
         "defender": get_defender_summary(),
     }
 

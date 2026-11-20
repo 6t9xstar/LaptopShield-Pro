@@ -47,6 +47,8 @@ class HardeningEngine:
     _WSH_KEY = r"SOFTWARE\Microsoft\Windows Script Host\Settings"
     _AUTORUN_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
     _SMB_PARAMS_KEY = r"SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"
+    _REMOTE_REG_KEY = r"SYSTEM\CurrentControlSet\Services\RemoteRegistry"
+    _SYSTEM_POLICY_KEY = r"SOFTWARE\Policies\Microsoft\Windows\System"
     _FIREWALL_DOMAIN = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\DomainProfile"
     _FIREWALL_STANDARD = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile"
     _FIREWALL_PUBLIC = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile"
@@ -142,6 +144,26 @@ class HardeningEngine:
                 "check": self._check_firewall,
                 "lock": self._lock_firewall,
                 "unlock": self._lock_firewall,
+            },
+            {
+                "id": "remote_registry",
+                "name": "Remote Registry Service",
+                "category": "network",
+                "description": "Disables RemoteRegistry service so network peers cannot read or alter registry keys.",
+                "weight": 5,
+                "check": self._check_remote_registry,
+                "lock": self._lock_remote_registry,
+                "unlock": self._unlock_remote_registry,
+            },
+            {
+                "id": "clipboard_guard",
+                "name": "Clipboard History & Cloud Sync",
+                "category": "privacy",
+                "description": "Disables clipboard history & cross-device sync to protect copied keys and passwords.",
+                "weight": 5,
+                "check": self._check_clipboard_guard,
+                "lock": self._lock_clipboard_guard,
+                "unlock": self._unlock_clipboard_guard,
             },
         ]
 
@@ -426,3 +448,39 @@ class HardeningEngine:
         if rc == 0:
             return True, "All 3 Windows Firewall profiles enforced ON"
         return False, err or "Administrator privileges required to enforce Firewall"
+
+    def _check_remote_registry(self) -> Tuple[bool, str]:
+        start_val = read_reg_value("HKEY_LOCAL_MACHINE", self._REMOTE_REG_KEY, "Start")
+        if start_val == 4:
+            return True, "RemoteRegistry service disabled"
+        return False, "RemoteRegistry service not disabled"
+
+    def _lock_remote_registry(self) -> Tuple[bool, str]:
+        run_powershell("Stop-Service RemoteRegistry -Force -ErrorAction SilentlyContinue")
+        ok, msg = write_reg_value("HKEY_LOCAL_MACHINE", self._REMOTE_REG_KEY, "Start", 4)
+        return (True, "RemoteRegistry stopped and disabled") if ok else (False, msg)
+
+    def _unlock_remote_registry(self) -> Tuple[bool, str]:
+        ok, msg = write_reg_value("HKEY_LOCAL_MACHINE", self._REMOTE_REG_KEY, "Start", 3)
+        return (True, "RemoteRegistry set to Manual") if ok else (False, msg)
+
+    def _check_clipboard_guard(self) -> Tuple[bool, str]:
+        hist = read_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowClipboardHistory")
+        sync = read_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowCrossDeviceClipboard")
+        if hist == 0 and sync == 0:
+            return True, "Clipboard history & cloud sync disabled"
+        return False, "Clipboard history or cloud sync permitted"
+
+    def _lock_clipboard_guard(self) -> Tuple[bool, str]:
+        ok1, m1 = write_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowClipboardHistory", 0)
+        ok2, m2 = write_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowCrossDeviceClipboard", 0)
+        if ok1 and ok2:
+            return True, "Clipboard history & cross-device sync blocked"
+        return False, f"Failed: {m1}; {m2}"
+
+    def _unlock_clipboard_guard(self) -> Tuple[bool, str]:
+        ok1, m1 = write_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowClipboardHistory", 1)
+        ok2, m2 = write_reg_value("HKEY_LOCAL_MACHINE", self._SYSTEM_POLICY_KEY, "AllowCrossDeviceClipboard", 1)
+        if ok1 and ok2:
+            return True, "Clipboard history & sync restored"
+        return False, f"Failed: {m1}; {m2}"

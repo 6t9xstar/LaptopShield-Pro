@@ -29,13 +29,15 @@ def test_score_calculation_all_locked():
                 return 0
             if name == "NoDriveTypeAutoRun":
                 return 255
+            if name in ("AllowClipboardHistory", "AllowCrossDeviceClipboard"):
+                return 0
             if name == "EnableFirewall":
                 return 1
             return None
 
         mock_read.side_effect = fake_read
         statuses = engine.list_controls()
-        assert len(statuses) == 9
+        assert len(statuses) == 11
         assert all(s.is_locked for s in statuses)
         assert engine.calculate_score(statuses) == 100
 
@@ -79,11 +81,11 @@ def test_lockdown_all_and_restore_all():
         patch("laptopshield.core.hardening.read_reg_value", return_value=None),
     ):
         locked_results = engine.lockdown_all()
-        assert len(locked_results) == 9
+        assert len(locked_results) == 11
         assert all(r.success for r in locked_results)
 
         restored_results = engine.restore_all()
-        assert len(restored_results) == 9
+        assert len(restored_results) == 11
         assert all(r.success for r in restored_results)
         fw_res = next(r for r in restored_results if r.control_id == "firewall")
         assert fw_res.locked is True
