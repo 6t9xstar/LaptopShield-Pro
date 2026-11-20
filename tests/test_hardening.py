@@ -17,6 +17,8 @@ def test_score_calculation_all_locked():
                 return 0
             if name == "Value":
                 return "Deny"
+            if name in ("LetAppsAccessCamera", "LetAppsAccessMicrophone"):
+                return 2
             if name == "SMB1":
                 return 0
             if name == "Start":
@@ -57,9 +59,13 @@ def test_lock_camera_writes_consent_store():
     engine = HardeningEngine()
     with (
         patch("laptopshield.core.hardening.write_reg_value", return_value=(True, "OK")) as mock_write,
-        patch("laptopshield.core.hardening.read_reg_value", return_value="Deny"),
+        patch("laptopshield.core.hardening.run_powershell", return_value=(0, "", "")),
+        patch(
+            "laptopshield.core.hardening.read_reg_value",
+            side_effect=lambda h, k, n: 2 if n == "LetAppsAccessCamera" else "Deny",
+        ),
     ):
         res = engine.set_control("camera", True)
         assert res.success
         assert res.locked
-        assert mock_write.call_count == 2
+        assert mock_write.call_count == 5

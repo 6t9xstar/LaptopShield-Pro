@@ -38,8 +38,11 @@ class HardeningEngine:
     _RDP_KEY = r"SYSTEM\CurrentControlSet\Control\Terminal Server"
     _RA_KEY = r"SYSTEM\CurrentControlSet\Control\Remote Assistance"
     _CAM_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+    _CAM_NP_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged"
     _MIC_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+    _MIC_NP_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
     _LOC_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    _APP_PRIVACY_KEY = r"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy"
     _DNS_POLICY_KEY = r"SOFTWARE\Policies\Microsoft\Windows NT\DNSClient"
     _WSH_KEY = r"SOFTWARE\Microsoft\Windows Script Host\Settings"
     _AUTORUN_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
@@ -237,22 +240,71 @@ class HardeningEngine:
         return False, f"Failed: {msg_m} / {msg_u}"
 
     def _check_camera(self) -> Tuple[bool, str]:
-        return self._check_consent(self._CAM_KEY, "Camera")
+        hklm = str(read_reg_value("HKEY_LOCAL_MACHINE", self._CAM_KEY, "Value") or "").lower()
+        hkcu_np = str(read_reg_value("HKEY_CURRENT_USER", self._CAM_NP_KEY, "Value") or "").lower()
+        policy = read_reg_value("HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessCamera")
+        if hklm == "deny" and hkcu_np == "deny" and policy == 2:
+            return True, "Camera fully locked (Driver + NonPackaged + Policy)"
+        if hkcu_np == "allow" or policy != 2:
+            return False, "Desktop apps (Chrome/Win32) can still access Camera"
+        return False, "Camera allowed"
 
     def _lock_camera(self) -> Tuple[bool, str]:
-        return self._set_consent(self._CAM_KEY, "Deny", "Camera")
+        self._set_consent(self._CAM_KEY, "Deny", "Camera")
+        ok_np, _ = self._set_consent(self._CAM_NP_KEY, "Deny", "Camera (Desktop Apps)")
+        ok_pol, msg_pol = write_reg_value(
+            "HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessCamera", 2
+        )
+        rc, _, err = run_powershell(
+            "Get-PnpDevice -Class Camera,Image -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.Status -eq 'OK' } | "
+            "Disable-PnpDevice -Confirm:$false -ErrorAction Stop"
+        )
+        if ok_pol and rc == 0:
+            return True, "Camera hardware driver + Policy + Chrome/Desktop apps BLOCKED"
+        if ok_np:
+            return (
+                ok_pol,
+                f"Registry/Desktop apps blocked; hardware driver lock needs Admin ({err or msg_pol})",
+            )
+        return False, f"Failed: {msg_pol} {err}"
 
     def _unlock_camera(self) -> Tuple[bool, str]:
-        return self._set_consent(self._CAM_KEY, "Allow", "Camera")
+        self._set_consent(self._CAM_KEY, "Allow", "Camera")
+        self._set_consent(self._CAM_NP_KEY, "Allow", "Camera (Desktop Apps)")
+        write_reg_value("HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessCamera", 0)
+        rc, _, err = run_powershell(
+            "Get-PnpDevice -Class Camera,Image -ErrorAction SilentlyContinue | "
+            "Enable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue"
+        )
+        return (True, "Camera hardware driver & app access RESTORED") if rc == 0 else (
+            True,
+            f"App access restored (run as Admin if hardware driver stays off: {err})",
+        )
 
     def _check_microphone(self) -> Tuple[bool, str]:
-        return self._check_consent(self._MIC_KEY, "Microphone")
+        hklm = str(read_reg_value("HKEY_LOCAL_MACHINE", self._MIC_KEY, "Value") or "").lower()
+        hkcu_np = str(read_reg_value("HKEY_CURRENT_USER", self._MIC_NP_KEY, "Value") or "").lower()
+        policy = read_reg_value("HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessMicrophone")
+        if hklm == "deny" and hkcu_np == "deny" and policy == 2:
+            return True, "Microphone fully locked (Policy + NonPackaged + System)"
+        return False, "Microphone allowed for desktop/UWP apps"
 
     def _lock_microphone(self) -> Tuple[bool, str]:
-        return self._set_consent(self._MIC_KEY, "Deny", "Microphone")
+        self._set_consent(self._MIC_KEY, "Deny", "Microphone")
+        ok_np, _ = self._set_consent(self._MIC_NP_KEY, "Deny", "Microphone (Desktop Apps)")
+        ok_pol, msg_pol = write_reg_value(
+            "HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessMicrophone", 2
+        )
+        if ok_pol and ok_np:
+            return True, "Microphone Policy + Chrome/Desktop apps BLOCKED"
+        return ok_np, f"User-level blocked; system policy needs Admin ({msg_pol})"
 
     def _unlock_microphone(self) -> Tuple[bool, str]:
-        return self._set_consent(self._MIC_KEY, "Allow", "Microphone")
+        self._set_consent(self._MIC_KEY, "Allow", "Microphone")
+        self._set_consent(self._MIC_NP_KEY, "Allow", "Microphone (Desktop Apps)")
+        write_reg_value("HKEY_LOCAL_MACHINE", self._APP_PRIVACY_KEY, "LetAppsAccessMicrophone", 0)
+        return True, "Microphone access RESTORED"
 
     def _check_location(self) -> Tuple[bool, str]:
         return self._check_consent(self._LOC_KEY, "Location")
