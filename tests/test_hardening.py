@@ -69,3 +69,21 @@ def test_lock_camera_writes_consent_store():
         assert res.success
         assert res.locked
         assert mock_write.call_count == 5
+
+
+def test_lockdown_all_and_restore_all():
+    engine = HardeningEngine()
+    with (
+        patch("laptopshield.core.hardening.write_reg_value", return_value=(True, "OK")),
+        patch("laptopshield.core.hardening.run_powershell", return_value=(0, "", "")),
+        patch("laptopshield.core.hardening.read_reg_value", return_value=None),
+    ):
+        locked_results = engine.lockdown_all()
+        assert len(locked_results) == 9
+        assert all(r.success for r in locked_results)
+
+        restored_results = engine.restore_all()
+        assert len(restored_results) == 9
+        assert all(r.success for r in restored_results)
+        fw_res = next(r for r in restored_results if r.control_id == "firewall")
+        assert fw_res.locked is True

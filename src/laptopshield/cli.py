@@ -79,6 +79,17 @@ def lockdown() -> None:
     console.print(f"\n[bold cyan]New Hardening Score: {score}%[/bold cyan]")
 
 
+@app.command("restore-all")
+def restore_all() -> None:
+    """Restore all reversible privacy and network controls (Windows Firewall remains ON)."""
+    engine = HardeningEngine()
+    console.print("[bold yellow]Restoring all reversible controls...[/bold yellow]")
+    for r in engine.restore_all():
+        icon = "[green]OK[/green]" if r.success else "[red]ERR[/red]"
+        console.print(f"  {icon} [{r.control_id}] {r.message}")
+    console.print(f"\n[bold cyan]Current Hardening Score: {engine.calculate_score()}%[/bold cyan]")
+
+
 @app.command("kill-remote")
 def kill_remote() -> None:
     """Terminate all running remote-access tools (AnyDesk, TeamViewer, RustDesk, VNC, etc.)."""

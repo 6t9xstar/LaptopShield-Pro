@@ -375,10 +375,15 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
 
-        panic_btn = QPushButton("Lock down endpoint")
+        panic_btn = QPushButton("Lock all")
         panic_btn.setObjectName("PanicBtn")
         panic_btn.setCursor(Qt.PointingHandCursor)
         panic_btn.clicked.connect(self._run_total_lockdown)
+
+        restore_all_btn = QPushButton("Restore all")
+        restore_all_btn.setObjectName("SecondaryBtn")
+        restore_all_btn.setCursor(Qt.PointingHandCursor)
+        restore_all_btn.clicked.connect(self._run_restore_all)
 
         kill_remote_btn = QPushButton("Terminate remote tools")
         kill_remote_btn.setObjectName("SecondaryBtn")
@@ -391,6 +396,7 @@ class MainWindow(QMainWindow):
         call_mode_btn.clicked.connect(self._run_restore_privacy)
 
         btn_row.addWidget(panic_btn)
+        btn_row.addWidget(restore_all_btn)
         btn_row.addWidget(kill_remote_btn)
         btn_row.addWidget(call_mode_btn)
         btn_row.addStretch()
@@ -686,6 +692,32 @@ class MainWindow(QMainWindow):
                 self,
                 "Lockdown complete",
                 "Endpoint hardening controls have been applied. Review the activity log for details.",
+            )
+
+        self._run_async(task, done)
+
+    def _run_restore_all(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Confirm restore all",
+            "Restore all reversible privacy and network controls to default (Windows Firewall remains ON)?",
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.log_event("Restoring all reversible controls...")
+
+        def task():
+            return self.engine.restore_all()
+
+        def done(results):
+            for r in results:
+                tag = "OK" if r.success else "ERR"
+                self.log_event(f"[{tag}] {r.control_id}: {r.message}")
+            self.refresh_all()
+            QMessageBox.information(
+                self,
+                "Restore complete",
+                "All reversible controls have been restored (Windows Firewall kept ON).",
             )
 
         self._run_async(task, done)

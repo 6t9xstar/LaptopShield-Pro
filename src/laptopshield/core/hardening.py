@@ -187,6 +187,23 @@ class HardeningEngine:
         """Activate every hardening control in the suite."""
         return [self.set_control(ctrl["id"], True) for ctrl in self._controls]
 
+    def restore_all(self) -> List[ControlResult]:
+        """Restore all reversible controls to Windows defaults while keeping Firewall ON."""
+        results: List[ControlResult] = []
+        for ctrl in self._controls:
+            if ctrl["id"] == "firewall":
+                results.append(
+                    ControlResult(
+                        control_id="firewall",
+                        success=True,
+                        locked=True,
+                        message="Windows Firewall kept ON for baseline safety",
+                    )
+                )
+                continue
+            results.append(self.set_control(ctrl["id"], False))
+        return results
+
     def restore_privacy_only(self) -> List[ControlResult]:
         """Re-enable Camera and Microphone for legitimate calls while keeping network locks."""
         return [
